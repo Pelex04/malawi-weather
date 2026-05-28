@@ -12,7 +12,7 @@ Weather data for all 28 districts of Malawi.
 
 ## API
 
-Base URL: `https://malawi-weather-api.onrender.com/api/v1`
+Base URL: `https://mvula.onrender.com/api/v1`
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
