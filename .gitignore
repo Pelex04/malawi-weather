@@ -1,0 +1,23 @@
+# ── Compiled output ──────────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+
+# ── Secrets — NEVER commit these ─────────────────────────────────
+.env
+*.env.local
+application-local.properties
+
+# ── IDE ───────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# ── OS ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Maven wrapper cache ───────────────────────────────────────────
+.mvn/wrapper/maven-wrapper.jar

@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Malawi Weather API — Admin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f172a;
+      --surface:   #1e293b;
+      --border:    #334155;
+      --primary:   #3b82f6;
+      --primary-h: #2563eb;
+      --success:   #22c55e;
+      --danger:    #ef4444;
+      --warning:   #f59e0b;
+      --text:      #f1f5f9;
+      --muted:     #94a3b8;
+      --radius:    10px;
+    }
+
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    /* --- Login --- */
+    #login-screen {
+      display: flex; align-items: center; justify-content: center; height: 100vh;
+    }
+    .login-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 40px; width: 360px;
+    }
+    .login-card h1 { font-size: 22px; margin-bottom: 6px; }
+    .login-card p  { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+    .login-card label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .login-card input {
+      width: 100%; padding: 10px 12px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 14px; margin-bottom: 16px;
+    }
+    .login-card input:focus { outline: none; border-color: var(--primary); }
+    #login-error { color: var(--danger); font-size: 13px; margin-bottom: 12px; display: none; }
+
+    /* --- Main layout --- */
+    #app { display: none; flex-direction: column; min-height: 100vh; }
+
+    header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0 28px; display: flex; align-items: center;
+      justify-content: space-between; height: 60px;
+    }
+    header h1 { font-size: 17px; font-weight: 700; }
+    header span { font-size: 13px; color: var(--muted); }
+
+    nav {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; gap: 4px; padding: 0 24px;
+    }
+    nav button {
+      background: none; border: none; color: var(--muted);
+      padding: 14px 16px; cursor: pointer; font-size: 14px;
+      border-bottom: 2px solid transparent; transition: all .15s;
+    }
+    nav button.active, nav button:hover { color: var(--text); border-bottom-color: var(--primary); }
+
+    main { padding: 28px; flex: 1; }
+
+    .tab { display: none; }
+    .tab.active { display: block; }
+
+    /* --- Stats cards --- */
+    .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 28px; }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px;
+    }
+    .stat-card .label { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+    .stat-card .value { font-size: 30px; font-weight: 700; }
+    .stat-card .value.blue   { color: var(--primary); }
+    .stat-card .value.green  { color: var(--success); }
+    .stat-card .value.orange { color: var(--warning); }
+
+    /* --- Tables --- */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden;
+    }
+    .card-header {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .card-header h2 { font-size: 15px; font-weight: 600; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th { background: var(--bg); padding: 12px 16px; text-align: left; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    td { padding: 14px 16px; border-top: 1px solid var(--border); font-size: 14px; vertical-align: middle; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+
+    /* --- Badges --- */
+    .badge {
+      display: inline-block; padding: 3px 9px; border-radius: 20px;
+      font-size: 12px; font-weight: 600;
+    }
+    .badge.pending  { background: rgba(245,158,11,.15); color: var(--warning); }
+    .badge.active   { background: rgba(34,197,94,.15);  color: var(--success); }
+    .badge.inactive { background: rgba(239,68,68,.15);  color: var(--danger); }
+
+    /* --- Buttons --- */
+    .btn {
+      padding: 7px 14px; border-radius: 6px; border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn.primary { background: var(--primary); color: #fff; }
+    .btn.success { background: var(--success); color: #fff; }
+    .btn.danger  { background: var(--danger);  color: #fff; }
+    .btn.ghost   { background: var(--border);  color: var(--text); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* --- Config panel --- */
+    .config-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px; max-width: 480px;
+    }
+    .config-card h2 { font-size: 15px; margin-bottom: 20px; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .form-group input {
+      width: 100%; padding: 10px 12px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 14px;
+    }
+    .form-group input:focus { outline: none; border-color: var(--primary); }
+
+    /* --- Toast --- */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 18px; font-size: 14px;
+      transform: translateY(80px); opacity: 0;
+      transition: all .25s; z-index: 9999;
+    }
+    #toast.show { transform: translateY(0); opacity: 1; }
+    #toast.success { border-color: var(--success); color: var(--success); }
+    #toast.error   { border-color: var(--danger);  color: var(--danger); }
+
+    .loading { color: var(--muted); padding: 24px; text-align: center; font-size: 14px; }
+    .empty   { color: var(--muted); padding: 40px; text-align: center; font-size: 14px; }
+    .key-value { font-family: monospace; font-size: 13px; background: var(--bg); padding: 4px 8px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-screen">
+  <div class="login-card">
+    <h1>🌦 Admin Dashboard</h1>
+    <p>Malawi Weather API</p>
+    <div id="login-error">Incorrect credentials.</div>
+    <label>Username</label>
+    <input type="text" id="username" placeholder="admin" />
+    <label>Password</label>
+    <input type="password" id="password" placeholder="••••••••" />
+    <label>API Base URL</label>
+    <input type="text" id="api-base" value="https://malawi-weather-api.onrender.com" />
+    <button class="btn primary" style="width:100%;padding:11px" onclick="login()">Sign In</button>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <header>
+    <h1>🌦 Malawi Weather API — Admin</h1>
+    <span id="admin-label"></span>
+  </header>
+  <nav>
+    <button class="active" onclick="switchTab('dashboard', this)">Dashboard</button>
+    <button onclick="switchTab('pending', this)">Pending Approvals <span id="pending-badge"></span></button>
+    <button onclick="switchTab('developers', this)">All Developers</button>
+    <button onclick="switchTab('districts', this)">Districts</button>
+  </nav>
+  <main>
+
+    <!-- Dashboard tab -->
+    <div id="tab-dashboard" class="tab active">
+      <div class="stats-grid">
+        <div class="stat-card"><div class="label">Requests Today</div><div class="value blue" id="stat-today">—</div></div>
+        <div class="stat-card"><div class="label">Total Developers</div><div class="value green" id="stat-devs">—</div></div>
+        <div class="stat-card"><div class="label">Pending Approvals</div><div class="value orange" id="stat-pending">—</div></div>
+        <div class="stat-card"><div class="label">Active Keys</div><div class="value blue" id="stat-keys">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h2>Most Queried Districts</h2></div>
+        <table>
+          <thead><tr><th>#</th><th>District</th><th>Requests</th></tr></thead>
+          <tbody id="top-districts"><tr><td colspan="3" class="loading">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Pending tab -->
+    <div id="tab-pending" class="tab">
+      <div class="card">
+        <div class="card-header">
+          <h2>Pending Approvals</h2>
+          <button class="btn ghost" onclick="loadPending()">↻ Refresh</button>
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>App</th><th>Registered</th><th>Actions</th></tr></thead>
+          <tbody id="pending-table"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Developers tab -->
+    <div id="tab-developers" class="tab">
+      <div class="card">
+        <div class="card-header">
+          <h2>All Developers</h2>
+          <button class="btn ghost" onclick="loadDevelopers()">↻ Refresh</button>
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>App</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="developers-table"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Districts tab -->
+    <div id="tab-districts" class="tab">
+      <div class="card">
+        <div class="card-header"><h2>Supported Districts (28)</h2></div>
+        <table>
+          <thead><tr><th>District</th><th>Region</th><th>Latitude</th><th>Longitude</th><th>Population</th></tr></thead>
+          <tbody id="districts-table"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let BASE_URL = '';
+  let authHeader = '';
+
+  // --- Auth ---
+  function login() {
+    const user = document.getElementById('username').value.trim();
+    const pass = document.getElementById('password').value.trim();
+    BASE_URL = document.getElementById('api-base').value.trim().replace(/\/$/, '');
+
+    if (!user || !pass || !BASE_URL) return;
+    authHeader = 'Basic ' + btoa(user + ':' + pass);
+
+    fetch(BASE_URL + '/admin/api/stats', { headers: { 'Authorization': authHeader } })
+      .then(r => {
+        if (r.status === 401) throw new Error('Unauthorized');
+        return r.json();
+      })
+      .then(() => {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        document.getElementById('admin-label').textContent = user;
+        loadDashboard();
+        loadPending();
+        loadDevelopers();
+        loadDistricts();
+      })
+      .catch(() => {
+        document.getElementById('login-error').style.display = 'block';
+      });
+  }
+
+  // --- Tabs ---
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  // --- Dashboard ---
+  function loadDashboard() {
+    api('/admin/api/stats').then(data => {
+      document.getElementById('stat-today').textContent   = data.todayRequests ?? '—';
+      document.getElementById('stat-devs').textContent    = data.totalDevelopers ?? '—';
+      document.getElementById('stat-pending').textContent = data.pendingApprovals ?? '—';
+      document.getElementById('stat-keys').textContent    = '—';
+
+      const badge = document.getElementById('pending-badge');
+      if (data.pendingApprovals > 0) badge.textContent = ` (${data.pendingApprovals})`;
+
+      const tbody = document.getElementById('top-districts');
+      const districts = data.mostQueriedDistricts || [];
+      if (!districts.length) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty">No data yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = districts.map((d, i) =>
+        `<tr><td>${i+1}</td><td>${d.district}</td><td>${d.count}</td></tr>`
+      ).join('');
+    });
+  }
+
+  // --- Pending ---
+  function loadPending() {
+    api('/admin/api/developers/pending').then(devs => {
+      const tbody = document.getElementById('pending-table');
+      if (!devs.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No pending approvals 🎉</td></tr>';
+        return;
+      }
+      tbody.innerHTML = devs.map(d => `
+        <tr>
+          <td>${esc(d.name)}</td>
+          <td>${esc(d.email)}</td>
+          <td>${esc(d.appName)}<br><small style="color:var(--muted)">${esc(d.appDescription||'')}</small></td>
+          <td>${formatDate(d.createdAt)}</td>
+          <td>
+            <button class="btn success" onclick="approve(${d.id}, this)">Approve</button>
+            &nbsp;
+            <button class="btn danger" onclick="revoke(${d.id}, this)">Reject</button>
+          </td>
+        </tr>`).join('');
+    });
+  }
+
+  function approve(id, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    apiPost(`/admin/api/developers/${id}/approve`).then(data => {
+      toast(`✅ Approved. Key: ${data.apiKey}`, 'success');
+      loadPending(); loadDashboard(); loadDevelopers();
+    }).catch(() => { btn.disabled = false; btn.textContent = 'Approve'; });
+  }
+
+  function revoke(id, btn) {
+    if (!confirm('Are you sure you want to reject/revoke this developer?')) return;
+    btn.disabled = true;
+    apiPost(`/admin/api/developers/${id}/revoke`).then(() => {
+      toast('Developer revoked', 'success');
+      loadPending(); loadDashboard(); loadDevelopers();
+    }).catch(() => { btn.disabled = false; });
+  }
+
+  // --- Developers ---
+  function loadDevelopers() {
+    api('/admin/api/developers').then(devs => {
+      const tbody = document.getElementById('developers-table');
+      if (!devs.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No developers yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = devs.map(d => `
+        <tr>
+          <td>${esc(d.name)}</td>
+          <td>${esc(d.email)}</td>
+          <td>${esc(d.appName)}</td>
+          <td><span class="badge ${d.isActive ? 'active' : 'pending'}">${d.isActive ? 'Active' : 'Pending'}</span></td>
+          <td>
+            ${d.isActive
+              ? `<button class="btn danger" onclick="revoke(${d.id}, this)">Suspend</button>`
+              : `<button class="btn success" onclick="approve(${d.id}, this)">Approve</button>`
+            }
+          </td>
+        </tr>`).join('');
+    });
+  }
+
+  // --- Districts ---
+  function loadDistricts() {
+    fetch(BASE_URL + '/api/v1/districts')
+      .then(r => r.json())
+      .then(res => {
+        const districts = res.data || [];
+        const tbody = document.getElementById('districts-table');
+        tbody.innerHTML = districts.map(d => `
+          <tr>
+            <td>${esc(d.name)}</td>
+            <td>${esc(d.region)}</td>
+            <td>${d.latitude}</td>
+            <td>${d.longitude}</td>
+            <td>${d.populationApprox ? Number(d.populationApprox).toLocaleString() : '—'}</td>
+          </tr>`).join('');
+      });
+  }
+
+  // --- API helpers ---
+  function api(endpoint) {
+    return fetch(BASE_URL + endpoint, { headers: { 'Authorization': authHeader } })
+      .then(r => r.json())
+      .then(res => res.data || res);
+  }
+
+  function apiPost(endpoint, body) {
+    return fetch(BASE_URL + endpoint, {
+      method: 'POST',
+      headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(r => r.json()).then(res => res.data || res);
+  }
+
+  // --- Utils ---
+  function esc(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function formatDate(dt) {
+    if (!dt) return '—';
+    return new Date(dt).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+  }
+
+  function toast(msg, type) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'show ' + (type || '');
+    setTimeout(() => el.className = '', 3000);
+  }
+
+  // Enter key on login
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && document.getElementById('login-screen').style.display !== 'none') login();
+  });
+</script>
+</body>
+</html>

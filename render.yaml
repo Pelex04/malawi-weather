@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: malawi-weather-api
+    env: java
+    buildCommand: cd api && mvn clean package -DskipTests
+    startCommand: java -jar api/target/weather-api-1.0.0.jar
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
