@@ -45,7 +45,4 @@ public class ApiKey {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
     }
-    public List<ApiKey> getKeysByDeveloper(Long developerId) {
-    return apiKeyRepository.findByDeveloperId(developerId);
-}
 }
