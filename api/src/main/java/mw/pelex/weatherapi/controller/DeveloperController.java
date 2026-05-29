@@ -12,7 +12,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/developers")
-@CrossOrigin(origins = "*")
+// @CrossOrigin removed — CORS is handled globally in CorsConfig
 public class DeveloperController {
 
     private final DeveloperService developerService;
@@ -23,8 +23,9 @@ public class DeveloperController {
 
     /**
      * POST /api/v1/developers/register
-     * Public - no key required
-     * Registers a developer and awaits admin approval
+     * Public — no key required.
+     * Registers a developer in PENDING_VERIFICATION state.
+     * The Next.js layer sends the verification email; this endpoint only persists.
      */
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<Map<String, Object>>> register(
@@ -33,10 +34,10 @@ public class DeveloperController {
         try {
             Developer developer = developerService.register(request);
             return ResponseEntity.ok(ApiResponse.success(Map.of(
-                    "message", "Registration successful! Your account is pending admin approval. You'll receive your API key once approved.",
+                    "message",     "Registration received. Check your email for a verification code.",
                     "developerId", developer.getId(),
-                    "email", developer.getEmail(),
-                    "status", "PENDING_APPROVAL"
+                    "email",       developer.getEmail(),
+                    "status",      developer.getStatus().name()
             )));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()

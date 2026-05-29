@@ -32,20 +32,33 @@ public class DeveloperService {
         developer.setEmail(request.getEmail());
         developer.setAppName(request.getAppName());
         developer.setAppDescription(request.getAppDescription());
-        developer.setIsActive(false); // pending admin approval
-
+        developer.setIsActive(false);
+        developer.setStatus(Developer.Status.PENDING_VERIFICATION);
         return developerRepository.save(developer);
     }
 
+    /**
+     * Idempotent approval: if the developer already has an active key this returns
+     * the existing key rather than generating a duplicate.
+     */
     @Transactional
     public ApiKey approveDeveloper(Long developerId) {
         Developer developer = developerRepository.findById(developerId)
                 .orElseThrow(() -> new IllegalArgumentException("Developer not found"));
 
-        developer.setIsActive(true);
-        developerRepository.save(developer);
+        // Return existing active key — prevents duplicate key generation on retries
+        Optional<ApiKey> existingKey = apiKeyService.getKeysByDeveloper(developerId)
+                .stream()
+                .filter(ApiKey::getIsActive)
+                .findFirst();
 
-        // Generate their API key upon approval
+        if (existingKey.isPresent() && developer.getIsActive()) {
+            return existingKey.get();
+        }
+
+        developer.setIsActive(true);
+        developer.setStatus(Developer.Status.ACTIVE);
+        developerRepository.save(developer);
         return apiKeyService.generateKeyForDeveloper(developer);
     }
 
@@ -55,15 +68,18 @@ public class DeveloperService {
                 .orElseThrow(() -> new IllegalArgumentException("Developer not found"));
 
         developer.setIsActive(false);
+        developer.setStatus(Developer.Status.REVOKED);   // distinguishable from PENDING_VERIFICATION
         developerRepository.save(developer);
 
-        // Disable all their keys
-        developer.getApiKeys().forEach(key ->
-                apiKeyService.toggleKey(key.getId(), false));
+        developer.getApiKeys().forEach(key -> apiKeyService.toggleKey(key.getId(), false));
     }
 
+    /**
+     * Returns only genuinely pending developers — not revoked ones.
+     * Previously both had isActive=false and were indistinguishable.
+     */
     public List<Developer> getPendingApprovals() {
-        return developerRepository.findByIsActive(false);
+        return developerRepository.findByStatus(Developer.Status.PENDING_VERIFICATION);
     }
 
     public List<Developer> getAllDevelopers() {
@@ -72,5 +88,13 @@ public class DeveloperService {
 
     public Optional<Developer> findByEmail(String email) {
         return developerRepository.findByEmail(email);
+    }
+
+    public Long countAll() {
+        return developerRepository.countAll();
+    }
+
+    public Long countByStatus(Developer.Status status) {
+        return developerRepository.countByStatus(status);
     }
 }

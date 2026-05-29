@@ -1,13 +1,13 @@
 package mw.pelex.weatherapi.controller;
 
 import mw.pelex.weatherapi.dto.ApiResponse;
+import mw.pelex.weatherapi.dto.DeveloperResponse;
 import mw.pelex.weatherapi.model.ApiKey;
 import mw.pelex.weatherapi.model.Developer;
 import mw.pelex.weatherapi.repository.UsageLogRepository;
 import mw.pelex.weatherapi.service.ApiKeyService;
 import mw.pelex.weatherapi.service.DeveloperService;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -29,16 +29,24 @@ public class AdminController {
         this.usageLogRepository = usageLogRepository;
     }
 
-    // --- Developer management ---
+    // ── Developer management ─────────────────────────────────────────────────
 
     @GetMapping("/developers")
-    public ResponseEntity<ApiResponse<List<Developer>>> getAllDevelopers() {
-        return ResponseEntity.ok(ApiResponse.success(developerService.getAllDevelopers()));
+    public ResponseEntity<ApiResponse<List<DeveloperResponse>>> getAllDevelopers() {
+        List<DeveloperResponse> result = developerService.getAllDevelopers()
+                .stream()
+                .map(DeveloperResponse::from)
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success(result));
     }
 
     @GetMapping("/developers/pending")
-    public ResponseEntity<ApiResponse<List<Developer>>> getPendingDevelopers() {
-        return ResponseEntity.ok(ApiResponse.success(developerService.getPendingApprovals()));
+    public ResponseEntity<ApiResponse<List<DeveloperResponse>>> getPendingDevelopers() {
+        List<DeveloperResponse> result = developerService.getPendingApprovals()
+                .stream()
+                .map(DeveloperResponse::from)
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success(result));
     }
 
     @PostMapping("/developers/{id}/approve")
@@ -65,39 +73,48 @@ public class AdminController {
         }
     }
 
-    // --- API key management ---
+    // ── Developer lookup ─────────────────────────────────────────────────────
 
-    @GetMapping("/keys/developer/{developerId}")
-    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getKeysByDeveloper(@PathVariable Long developerId) {
-        var keys = apiKeyService.getKeysByDeveloper(developerId);
-        var result = keys.stream()
-                .map(k -> Map.<String, Object>of(
-                        "id", k.getId(),
-                        "keyValue", k.getKeyValue(),
-                        "isActive", k.getIsActive(),
-                        "totalRequests", k.getTotalRequests(),
-                        "dailyLimit", k.getDailyLimit()
-                ))
-                .toList();
-        return ResponseEntity.ok(ApiResponse.success(result));
-    }
-
+    /**
+     * Returns developer info with their active API key.
+     * Used by the Next.js login route — credentials are verified server-side,
+     * this endpoint is not callable from the browser.
+     */
     @GetMapping("/developers/by-email")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getDeveloperByEmail(@RequestParam String email) {
         return developerService.findByEmail(email)
                 .map(dev -> {
                     var keys = apiKeyService.getKeysByDeveloper(dev.getId());
-                    var activeKey = keys.stream().filter(k -> k.getIsActive()).findFirst();
+                    var activeKey = keys.stream().filter(ApiKey::getIsActive).findFirst();
                     return ResponseEntity.ok(ApiResponse.success(Map.<String, Object>of(
-                            "id", dev.getId(),
-                            "name", dev.getName(),
-                            "email", dev.getEmail(),
-                            "appName", dev.getAppName() != null ? dev.getAppName() : "",
-                            "isActive", dev.getIsActive(),
-                            "apiKey", activeKey.map(k -> k.getKeyValue()).orElse("")
+                            "id",        dev.getId(),
+                            "name",      dev.getName(),
+                            "email",     dev.getEmail(),
+                            "appName",   dev.getAppName() != null ? dev.getAppName() : "",
+                            "isActive",  dev.getIsActive(),
+                            "status",    dev.getStatus().name(),
+                            "apiKey",    activeKey.map(ApiKey::getKeyValue).orElse("")
                     )));
                 })
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    // ── API key management ───────────────────────────────────────────────────
+
+    @GetMapping("/keys/developer/{developerId}")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getKeysByDeveloper(@PathVariable Long developerId) {
+        var result = apiKeyService.getKeysByDeveloper(developerId)
+                .stream()
+                .map(k -> Map.<String, Object>of(
+                        "id",            k.getId(),
+                        "isActive",      k.getIsActive(),
+                        "totalRequests", k.getTotalRequests(),
+                        "dailyLimit",    k.getDailyLimit(),
+                        "createdAt",     k.getCreatedAt()
+                        // keyValue intentionally omitted — shown only at generation time
+                ))
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success(result));
     }
 
     @PostMapping("/keys/{id}/toggle")
@@ -108,23 +125,24 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success("Key " + (active ? "activated" : "deactivated")));
     }
 
-    // --- Stats ---
+    // ── Stats ────────────────────────────────────────────────────────────────
 
     @GetMapping("/stats")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getStats() {
-        Long todayRequests = usageLogRepository.countTodayTotalRequests();
+        // All counts use DB-level COUNT queries — no full table scans in Java
+        Long todayRequests   = usageLogRepository.countTodayTotalRequests();
+        Long totalDevelopers = developerService.countAll();
+        Long pendingCount    = developerService.countByStatus(Developer.Status.PENDING_VERIFICATION);
         List<Object[]> topDistricts = usageLogRepository.findMostQueriedDistricts();
-        List<Developer> pendingCount = developerService.getPendingApprovals();
 
         return ResponseEntity.ok(ApiResponse.success(Map.of(
-                "todayRequests", todayRequests,
-                "pendingApprovals", pendingCount.size(),
-                "totalDevelopers", developerService.getAllDevelopers().size(),
+                "todayRequests",        todayRequests,
+                "pendingApprovals",     pendingCount,
+                "totalDevelopers",      totalDevelopers,
                 "mostQueriedDistricts", topDistricts.stream()
                         .limit(5)
                         .map(row -> Map.of("district", row[0], "count", row[1]))
                         .toList()
         )));
     }
-    
 }

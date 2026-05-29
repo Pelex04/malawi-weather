@@ -12,6 +12,13 @@ import java.util.List;
 @NoArgsConstructor
 public class Developer {
 
+    public enum Status {
+        PENDING_VERIFICATION,  // registered, OTP not yet confirmed
+        PENDING_APPROVAL,      // verified, awaiting manual admin approval (reserved for manual-approval mode)
+        ACTIVE,                // approved and active
+        REVOKED                // suspended by admin
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -31,14 +38,27 @@ public class Developer {
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
+    /**
+     * Convenience boolean used by ApiKeyFilter and Spring Security checks.
+     * Always keep in sync with {@code status}.
+     */
     @Column(name = "is_active", nullable = false)
-    private Boolean isActive = false; // Admin must approve
+    private Boolean isActive = false;
 
-    @OneToMany(mappedBy = "developer", cascade = CascadeType.ALL)
+    /**
+     * Fine-grained status — avoids the original bug where revoked developers
+     * were indistinguishable from pending ones (both had isActive = false).
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 30)
+    private Status status = Status.PENDING_VERIFICATION;
+
+    @OneToMany(mappedBy = "developer", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<ApiKey> apiKeys;
 
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
+        if (status == null) status = Status.PENDING_VERIFICATION;
     }
 }

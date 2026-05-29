@@ -29,7 +29,6 @@ public class ApiKeyFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI();
 
-        // Skip auth for public endpoints
         if (isPublicEndpoint(path)) {
             filterChain.doFilter(request, response);
             return;
@@ -38,7 +37,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
         String apiKeyValue = extractApiKey(request);
 
         if (apiKeyValue == null) {
-            sendError(response, 401, "API key required. Pass it as X-API-Key header or ?api_key= param.");
+            sendError(response, 401, "API key required. Pass it via the X-API-Key header.");
             return;
         }
 
@@ -61,26 +60,27 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             return;
         }
 
-        // Attach api key to request for controllers to use
         request.setAttribute("apiKey", apiKey);
         filterChain.doFilter(request, response);
     }
 
     private String extractApiKey(HttpServletRequest request) {
-        // Support both header and query param
+        // Header only — query param removed.
+        // Accepting keys in query params logs them in server access logs, proxy logs,
+        // and browser history. Header is the only safe transport.
         String header = request.getHeader("X-API-Key");
         if (header != null && !header.isBlank()) return header;
-        return request.getParameter("api_key");
+        return null;
     }
 
     private boolean isPublicEndpoint(String path) {
-        return path.startsWith("/api/v1/developers/register") ||
-               path.startsWith("/api/v1/districts") ||
-               path.startsWith("/admin") ||
-               path.startsWith("/actuator/health") ||
-               path.equals("/") ||
-               path.startsWith("/swagger") ||
-               path.startsWith("/v3/api-docs");
+        return path.startsWith("/api/v1/developers/register")
+            || path.startsWith("/api/v1/districts")
+            || path.startsWith("/admin")
+            || path.startsWith("/actuator/health")
+            || path.equals("/")
+            || path.startsWith("/swagger")
+            || path.startsWith("/v3/api-docs");
     }
 
     private void sendError(HttpServletResponse response, int status, String message) throws IOException {
