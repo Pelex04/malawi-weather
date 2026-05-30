@@ -1,11 +1,14 @@
 package mw.pelex.weatherapi.dto;
 
-import lombok.Data;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Builder;
+import lombok.Data;
+
 import java.time.LocalDateTime;
 
 @Data
 @Builder
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class WeatherResponse {
 
     private String district;
@@ -26,7 +29,7 @@ public class WeatherResponse {
     private Double precipitationProbability;
     private Integer uvIndex;
     private String weatherDescription;
-    private String weatherCode; // WMO code mapped to description
+    private String weatherCode;
     private Boolean isDay;
 
     // Atmospheric
@@ -37,4 +40,12 @@ public class WeatherResponse {
     // Sun
     private String sunrise;
     private String sunset;
+
+    /**
+     * Present only when the response is served from a stale cache
+     * (e.g. after an Open-Meteo 429). Consumers should treat the data
+     * as approximate and check staleSince for how old it is.
+     */
+    private Boolean stale;
+    private LocalDateTime staleSince;
 }

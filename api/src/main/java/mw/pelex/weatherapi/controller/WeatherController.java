@@ -16,7 +16,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1")
-@CrossOrigin(origins = "*")
+// @CrossOrigin removed — handled globally by CorsConfig
 public class WeatherController {
 
     private final OpenMeteoService openMeteoService;
@@ -31,80 +31,63 @@ public class WeatherController {
         this.apiKeyService = apiKeyService;
     }
 
-    /**
-     * GET /api/v1/districts
-     * Public - no key required
-     * Returns all supported districts
-     */
     @GetMapping("/districts")
     public ResponseEntity<ApiResponse<List<District>>> getAllDistricts() {
-        List<District> districts = districtRepository.findAll();
-        return ResponseEntity.ok(ApiResponse.success(districts));
+        return ResponseEntity.ok(ApiResponse.success(districtRepository.findAll()));
     }
 
-    /**
-     * GET /api/v1/districts/{region}
-     * Public - no key required
-     * Returns districts by region (Northern, Central, Southern)
-     */
     @GetMapping("/districts/region/{region}")
     public ResponseEntity<ApiResponse<List<District>>> getDistrictsByRegion(@PathVariable String region) {
         List<District> districts = districtRepository.findByRegionIgnoreCase(region);
-        if (districts.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+        if (districts.isEmpty()) return ResponseEntity.notFound().build();
         return ResponseEntity.ok(ApiResponse.success(districts));
     }
 
-    /**
-     * GET /api/v1/weather/{district}
-     * Requires API key
-     * Returns current weather for a district
-     */
     @GetMapping("/weather/{district}")
     public ResponseEntity<ApiResponse<WeatherResponse>> getCurrentWeather(
-            @PathVariable String district,
-            HttpServletRequest request) {
+            @PathVariable String district, HttpServletRequest request) {
 
         ApiKey apiKey = (ApiKey) request.getAttribute("apiKey");
-
-        District found = districtRepository.findByNameIgnoreCase(district)
-                .orElse(null);
+        District found = districtRepository.findByNameIgnoreCase(district).orElse(null);
 
         if (found == null) {
             apiKeyService.logUsage(apiKey, "/weather/" + district, district, 404, request);
             return ResponseEntity.status(404)
-                    .body(ApiResponse.error("District '" + district + "' not found. Call /api/v1/districts for the full list."));
+                .body(ApiResponse.error("District '" + district + "' not found. Call /api/v1/districts for the full list."));
         }
 
-        WeatherResponse weather = openMeteoService.getCurrentWeather(found);
-        apiKeyService.logUsage(apiKey, "/weather/" + district, district, 200, request);
-        return ResponseEntity.ok(ApiResponse.success(weather));
+        try {
+            WeatherResponse weather = openMeteoService.getCurrentWeather(found);
+            apiKeyService.logUsage(apiKey, "/weather/" + district, district, 200, request);
+            return ResponseEntity.ok(ApiResponse.success(weather));
+        } catch (RuntimeException e) {
+            apiKeyService.logUsage(apiKey, "/weather/" + district, district, 503, request);
+            return ResponseEntity.status(503)
+                .body(ApiResponse.error(e.getMessage()));
+        }
     }
 
-    /**
-     * GET /api/v1/forecast/{district}
-     * Requires API key
-     * Returns 7-day forecast for a district
-     */
     @GetMapping("/forecast/{district}")
     public ResponseEntity<ApiResponse<ForecastResponse>> getForecast(
-            @PathVariable String district,
-            HttpServletRequest request) {
+            @PathVariable String district, HttpServletRequest request) {
 
         ApiKey apiKey = (ApiKey) request.getAttribute("apiKey");
-
-        District found = districtRepository.findByNameIgnoreCase(district)
-                .orElse(null);
+        District found = districtRepository.findByNameIgnoreCase(district).orElse(null);
 
         if (found == null) {
             apiKeyService.logUsage(apiKey, "/forecast/" + district, district, 404, request);
             return ResponseEntity.status(404)
-                    .body(ApiResponse.error("District '" + district + "' not found. Call /api/v1/districts for the full list."));
+                .body(ApiResponse.error("District '" + district + "' not found. Call /api/v1/districts for the full list."));
         }
 
-        ForecastResponse forecast = openMeteoService.getForecast(found);
-        apiKeyService.logUsage(apiKey, "/forecast/" + district, district, 200, request);
-        return ResponseEntity.ok(ApiResponse.success(forecast));
+        try {
+            ForecastResponse forecast = openMeteoService.getForecast(found);
+            apiKeyService.logUsage(apiKey, "/forecast/" + district, district, 200, request);
+            return ResponseEntity.ok(ApiResponse.success(forecast));
+        } catch (RuntimeException e) {
+            apiKeyService.logUsage(apiKey, "/forecast/" + district, district, 503, request);
+            return ResponseEntity.status(503)
+                .body(ApiResponse.error(e.getMessage()));
+        }
     }
 }

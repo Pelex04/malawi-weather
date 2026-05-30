@@ -1,12 +1,15 @@
 package mw.pelex.weatherapi.dto;
 
-import lombok.Data;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Builder;
-import java.util.List;
+import lombok.Data;
+
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 @Builder
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class ForecastResponse {
 
     private String district;
@@ -15,6 +18,10 @@ public class ForecastResponse {
     private Double longitude;
     private LocalDateTime fetchedAt;
     private List<DailyForecast> forecast;
+
+    /** Present only when served from stale cache after a 429 */
+    private Boolean stale;
+    private LocalDateTime staleSince;
 
     @Data
     @Builder
