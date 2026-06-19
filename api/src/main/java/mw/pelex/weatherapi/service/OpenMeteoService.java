@@ -10,12 +10,14 @@ import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cache.annotation.CachePut;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,15 +29,20 @@ public class OpenMeteoService {
 
     private static final Logger log = LoggerFactory.getLogger(OpenMeteoService.class);
 
-    // Cache TTL in minutes — current weather refreshes every 30 min, forecast every 3 hours
-    private static final int CURRENT_TTL = 30;
-    private static final int FORECAST_TTL = 180;
+    // FIX B13: separate TTL constants — CacheConfig now also uses these values.
+    // Current weather: fresh every 30 minutes.
+    // Forecast:        fresh every 3 hours (180 min) — daily data changes slowly.
+    static final int CURRENT_TTL_MINUTES  = 30;
+    static final int FORECAST_TTL_MINUTES = 180;
+
+    // FIX S7: hard timeout prevents thread starvation when Open-Meteo is slow.
+    private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
     @Value("${openmeteo.base-url}")
     private String baseUrl;
 
-    private final org.springframework.web.reactive.function.client.WebClient webClient;
-    private final WeatherCacheRepository weatherCacheRepository;
+    private final WebClient                webClient;
+    private final WeatherCacheRepository   weatherCacheRepository;
 
     private static final Map<Integer, String> WMO_CODES = Map.ofEntries(
         Map.entry(0,  "Clear sky"),
@@ -61,158 +68,168 @@ public class OpenMeteoService {
         Map.entry(99, "Thunderstorm with heavy hail")
     );
 
-    public OpenMeteoService(
-            org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder,
-            WeatherCacheRepository weatherCacheRepository) {
-        this.webClient = webClientBuilder.build();
+    public OpenMeteoService(WebClient.Builder webClientBuilder,
+                            WeatherCacheRepository weatherCacheRepository) {
+        this.webClient             = webClientBuilder
+            .codecs(c -> c.defaultCodecs().maxInMemorySize(512 * 1024)) // 512 KB cap
+            .build();
         this.weatherCacheRepository = weatherCacheRepository;
     }
 
-    // ── Current weather ──────────────────────────────────────────────────────
+    // ── Current weather ───────────────────────────────────────────────────────
 
-    @Cacheable(value = "currentWeather", key = "#district.name")
+    @Cacheable(value = "currentWeather", key = "#district.name.toLowerCase()")
     public WeatherResponse getCurrentWeather(District district) {
-        // L2: check DB cache first (survives Render restarts)
         Optional<WeatherCache> dbCache = weatherCacheRepository
             .findByDistrictNameIgnoreCaseAndCacheType(district.getName(), WeatherCache.Type.CURRENT);
 
         if (dbCache.isPresent() && !dbCache.get().isExpired()) {
-            log.debug("DB cache hit for current weather: {}", district.getName());
+            log.debug("L2 cache hit — current weather: {}", district.getName());
             return parseCurrentWeather(dbCache.get().getResponseJson(), district);
         }
 
-        // L3: fetch from Open-Meteo
         try {
-            String json = webClient.get()
-                .uri(buildCurrentWeatherUrl(district.getLatitude(), district.getLongitude()))
-                .retrieve()
-                .bodyToMono(String.class)
-                .block();
-
-            // Persist to DB cache — overwrites stale entry if present
-            WeatherCache entry = WeatherCache.of(district.getName(), WeatherCache.Type.CURRENT, json, CURRENT_TTL);
-            weatherCacheRepository.save(entry);
-
+            String json = fetchFromUpstream(buildCurrentWeatherUrl(district));
+            upsertDbCache(district.getName(), WeatherCache.Type.CURRENT, json, CURRENT_TTL_MINUTES);
             return parseCurrentWeather(json, district);
 
         } catch (WebClientResponseException.TooManyRequests e) {
-            log.warn("Open-Meteo rate limited (429) for {}", district.getName());
-
-            // Return stale DB cache rather than failing — stale data > no data
-            if (dbCache.isPresent()) {
-                log.info("Returning stale DB cache for {} after 429", district.getName());
-                WeatherResponse stale = parseCurrentWeather(dbCache.get().getResponseJson(), district);
-                stale.setStale(true);
-                stale.setStaleSince(dbCache.get().getCachedAt());
-                return stale;
-            }
-            throw new RuntimeException("Weather data temporarily unavailable. Please try again in a moment.");
+            log.warn("Open-Meteo 429 — current weather: {}", district.getName());
+            return dbCache.map(c -> staleCurrentWeather(c, district))
+                .orElseThrow(() -> new WeatherUnavailableException(
+                    "Weather data temporarily unavailable for " + district.getName() + ". Please retry shortly."));
 
         } catch (Exception e) {
-            log.error("Open-Meteo fetch failed for {}: {}", district.getName(), e.getMessage());
-
-            if (dbCache.isPresent()) {
-                log.info("Returning stale DB cache for {} after error", district.getName());
-                WeatherResponse stale = parseCurrentWeather(dbCache.get().getResponseJson(), district);
-                stale.setStale(true);
-                stale.setStaleSince(dbCache.get().getCachedAt());
-                return stale;
-            }
-            throw new RuntimeException("Weather data unavailable for " + district.getName() + ". Please try again shortly.");
+            log.error("Open-Meteo fetch failed — current weather {}: {}", district.getName(), e.getMessage());
+            return dbCache.map(c -> staleCurrentWeather(c, district))
+                .orElseThrow(() -> new WeatherUnavailableException(
+                    "Weather data unavailable for " + district.getName() + ". Please retry shortly."));
         }
     }
 
-    // ── Forecast ─────────────────────────────────────────────────────────────
+    // ── Forecast ──────────────────────────────────────────────────────────────
 
-    @Cacheable(value = "forecast", key = "#district.name")
+    @Cacheable(value = "forecast", key = "#district.name.toLowerCase()")
     public ForecastResponse getForecast(District district) {
         Optional<WeatherCache> dbCache = weatherCacheRepository
             .findByDistrictNameIgnoreCaseAndCacheType(district.getName(), WeatherCache.Type.FORECAST);
 
         if (dbCache.isPresent() && !dbCache.get().isExpired()) {
-            log.debug("DB cache hit for forecast: {}", district.getName());
+            log.debug("L2 cache hit — forecast: {}", district.getName());
             return parseForecast(dbCache.get().getResponseJson(), district);
         }
 
         try {
-            String json = webClient.get()
-                .uri(buildForecastUrl(district.getLatitude(), district.getLongitude()))
-                .retrieve()
-                .bodyToMono(String.class)
-                .block();
-
-            WeatherCache entry = WeatherCache.of(district.getName(), WeatherCache.Type.FORECAST, json, FORECAST_TTL);
-            weatherCacheRepository.save(entry);
-
+            String json = fetchFromUpstream(buildForecastUrl(district));
+            upsertDbCache(district.getName(), WeatherCache.Type.FORECAST, json, FORECAST_TTL_MINUTES);
             return parseForecast(json, district);
 
         } catch (WebClientResponseException.TooManyRequests e) {
-            log.warn("Open-Meteo rate limited (429) for forecast {}", district.getName());
-
-            if (dbCache.isPresent()) {
-                log.info("Returning stale forecast cache for {} after 429", district.getName());
-                ForecastResponse stale = parseForecast(dbCache.get().getResponseJson(), district);
-                stale.setStale(true);
-                stale.setStaleSince(dbCache.get().getCachedAt());
-                return stale;
-            }
-            throw new RuntimeException("Forecast data temporarily unavailable. Please try again in a moment.");
+            log.warn("Open-Meteo 429 — forecast: {}", district.getName());
+            return dbCache.map(c -> staleForecast(c, district))
+                .orElseThrow(() -> new WeatherUnavailableException(
+                    "Forecast temporarily unavailable for " + district.getName() + ". Please retry shortly."));
 
         } catch (Exception e) {
-            log.error("Open-Meteo forecast fetch failed for {}: {}", district.getName(), e.getMessage());
-
-            if (dbCache.isPresent()) {
-                ForecastResponse stale = parseForecast(dbCache.get().getResponseJson(), district);
-                stale.setStale(true);
-                stale.setStaleSince(dbCache.get().getCachedAt());
-                return stale;
-            }
-            throw new RuntimeException("Forecast unavailable for " + district.getName() + ". Please try again shortly.");
+            log.error("Open-Meteo fetch failed — forecast {}: {}", district.getName(), e.getMessage());
+            return dbCache.map(c -> staleForecast(c, district))
+                .orElseThrow(() -> new WeatherUnavailableException(
+                    "Forecast unavailable for " + district.getName() + ". Please retry shortly."));
         }
     }
 
-    // ── Scheduled cleanup — removes expired DB cache entries nightly ─────────
+    // ── Scheduled cleanup ─────────────────────────────────────────────────────
 
-    @Scheduled(cron = "0 0 3 * * *") // 3 AM daily
+    @Scheduled(cron = "0 0 3 * * *")
     public void cleanExpiredCache() {
         weatherCacheRepository.deleteExpired(LocalDateTime.now());
         log.info("Cleaned expired weather cache entries");
     }
 
-    // ── URL builders ─────────────────────────────────────────────────────────
+    // ── HTTP fetch ────────────────────────────────────────────────────────────
 
-    private String buildCurrentWeatherUrl(double lat, double lon) {
-        return baseUrl +
-            "?latitude=" + lat +
-            "&longitude=" + lon +
-            "&current=temperature_2m,relative_humidity_2m,apparent_temperature," +
-            "is_day,precipitation,weather_code,pressure_msl,wind_speed_10m," +
-            "wind_direction_10m,cloud_cover,visibility,uv_index" +
-            "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_probability_max" +
-            "&timezone=Africa/Blantyre" +
-            "&forecast_days=1";
+    private String fetchFromUpstream(String url) {
+        return webClient.get()
+            .uri(url)
+            .retrieve()
+            .bodyToMono(String.class)
+            .timeout(HTTP_TIMEOUT)   // FIX S7 — never hang indefinitely
+            .block();
     }
 
-    private String buildForecastUrl(double lat, double lon) {
-        return baseUrl +
-            "?latitude=" + lat +
-            "&longitude=" + lon +
-            "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum," +
-            "precipitation_probability_max,wind_speed_10m_max,weather_code," +
-            "uv_index_max,sunrise,sunset" +
-            "&timezone=Africa/Blantyre" +
-            "&forecast_days=7";
+    // ── DB cache write (FIX B5) ───────────────────────────────────────────────
+    //
+    // BEFORE: always called save() which INSERTs a new row — duplicates possible under
+    //         concurrent requests that both miss Caffeine and the DB simultaneously.
+    // NOW:    find-then-update (UPSERT semantics). A DB UNIQUE constraint on
+    //         (district_name, cache_type) provides the final safety net.
+    //         See WeatherCache entity and the migration note below.
+
+    @Transactional
+    protected void upsertDbCache(String districtName, WeatherCache.Type type,
+                                 String json, int ttlMinutes) {
+        WeatherCache entry = weatherCacheRepository
+            .findByDistrictNameIgnoreCaseAndCacheType(districtName, type)
+            .orElseGet(WeatherCache::new);
+
+        entry.setDistrictName(districtName.toLowerCase());
+        entry.setCacheType(type);
+        entry.setResponseJson(json);
+        entry.setCachedAt(LocalDateTime.now());
+        entry.setExpiresAt(LocalDateTime.now().plusMinutes(ttlMinutes));
+        weatherCacheRepository.save(entry);
+    }
+
+    // ── Stale-cache helpers ───────────────────────────────────────────────────
+
+    private WeatherResponse staleCurrentWeather(WeatherCache cache, District district) {
+        WeatherResponse resp = parseCurrentWeather(cache.getResponseJson(), district);
+        resp.setStale(true);
+        resp.setStaleSince(cache.getCachedAt());
+        return resp;
+    }
+
+    private ForecastResponse staleForecast(WeatherCache cache, District district) {
+        ForecastResponse resp = parseForecast(cache.getResponseJson(), district);
+        resp.setStale(true);
+        resp.setStaleSince(cache.getCachedAt());
+        return resp;
+    }
+
+    // ── URL builders ──────────────────────────────────────────────────────────
+
+    private String buildCurrentWeatherUrl(District d) {
+        return baseUrl
+            + "?latitude=" + d.getLatitude()
+            + "&longitude=" + d.getLongitude()
+            + "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+            + "is_day,precipitation,weather_code,pressure_msl,wind_speed_10m,"
+            + "wind_direction_10m,cloud_cover,visibility,uv_index"
+            + "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_probability_max"
+            + "&timezone=Africa/Blantyre"
+            + "&forecast_days=1";
+    }
+
+    private String buildForecastUrl(District d) {
+        return baseUrl
+            + "?latitude=" + d.getLatitude()
+            + "&longitude=" + d.getLongitude()
+            + "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,"
+            + "precipitation_probability_max,wind_speed_10m_max,weather_code,"
+            + "uv_index_max,sunrise,sunset"
+            + "&timezone=Africa/Blantyre"
+            + "&forecast_days=7";
     }
 
     // ── Parsers ───────────────────────────────────────────────────────────────
 
     private WeatherResponse parseCurrentWeather(String jsonStr, District district) {
-        JSONObject json = new JSONObject(jsonStr);
+        JSONObject json    = new JSONObject(jsonStr);
         JSONObject current = json.getJSONObject("current");
-        JSONObject daily = json.getJSONObject("daily");
+        JSONObject daily   = json.getJSONObject("daily");
 
-        int weatherCode = current.getInt("weather_code");
-        double windDeg = current.getDouble("wind_direction_10m");
+        int    weatherCode = current.getInt("weather_code");
+        double windDeg     = current.getDouble("wind_direction_10m");
 
         return WeatherResponse.builder()
             .district(district.getName())
@@ -226,7 +243,7 @@ public class OpenMeteoService {
             .temperatureMax(daily.getJSONArray("temperature_2m_max").getDouble(0))
             .humidity(current.getInt("relative_humidity_2m"))
             .windSpeedKph(current.getDouble("wind_speed_10m"))
-            .windDirection(getWindDirection(windDeg))
+            .windDirection(compassDirection(windDeg))
             .precipitationMm(current.getDouble("precipitation"))
             .precipitationProbability(daily.getJSONArray("precipitation_probability_max").getDouble(0))
             .uvIndex(current.optInt("uv_index", 0))
@@ -242,7 +259,7 @@ public class OpenMeteoService {
     }
 
     private ForecastResponse parseForecast(String jsonStr, District district) {
-        JSONObject json = new JSONObject(jsonStr);
+        JSONObject json  = new JSONObject(jsonStr);
         JSONObject daily = json.getJSONObject("daily");
 
         JSONArray dates      = daily.getJSONArray("time");
@@ -283,8 +300,15 @@ public class OpenMeteoService {
             .build();
     }
 
-    private String getWindDirection(double degrees) {
-        String[] dirs = {"N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"};
+    private static String compassDirection(double degrees) {
+        String[] dirs = {"N","NNE","NE","ENE","E","ESE","SE","SSE",
+                         "S","SSW","SW","WSW","W","WNW","NW","NNW"};
         return dirs[(int) Math.round(((degrees % 360) / 22.5)) % 16];
+    }
+
+    // ── Typed exception ───────────────────────────────────────────────────────
+
+    public static class WeatherUnavailableException extends RuntimeException {
+        public WeatherUnavailableException(String message) { super(message); }
     }
 }

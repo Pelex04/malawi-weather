@@ -1,9 +1,15 @@
 package mw.pelex.weatherapi.service;
 
 import mw.pelex.weatherapi.dto.DeveloperRegistrationRequest;
+import mw.pelex.weatherapi.dto.DeveloperResponse;
 import mw.pelex.weatherapi.model.ApiKey;
 import mw.pelex.weatherapi.model.Developer;
+import mw.pelex.weatherapi.repository.ApiKeyRepository;
 import mw.pelex.weatherapi.repository.DeveloperRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,88 +19,116 @@ import java.util.Optional;
 @Service
 public class DeveloperService {
 
+    private static final Logger log = LoggerFactory.getLogger(DeveloperService.class);
+
     private final DeveloperRepository developerRepository;
-    private final ApiKeyService apiKeyService;
+    private final ApiKeyRepository    apiKeyRepository;
+    private final ApiKeyService       apiKeyService;
+    private final PasswordEncoder     passwordEncoder;
 
-    public DeveloperService(DeveloperRepository developerRepository, ApiKeyService apiKeyService) {
+    public DeveloperService(DeveloperRepository developerRepository,
+                            ApiKeyRepository    apiKeyRepository,
+                            ApiKeyService       apiKeyService,
+                            PasswordEncoder     passwordEncoder) {
         this.developerRepository = developerRepository;
-        this.apiKeyService = apiKeyService;
+        this.apiKeyRepository    = apiKeyRepository;
+        this.apiKeyService       = apiKeyService;
+        this.passwordEncoder     = passwordEncoder;
     }
 
+    // ── Registration ──────────────────────────────────────────────────────────
+
     @Transactional
-    public Developer register(DeveloperRegistrationRequest request) {
-        if (developerRepository.existsByEmail(request.getEmail())) {
-            throw new IllegalArgumentException("Email already registered");
+    public DeveloperResponse registerDeveloper(DeveloperRegistrationRequest req) {
+        if (developerRepository.existsByEmail(req.getEmail())) {
+            throw new IllegalArgumentException("An account with this email address already exists.");
         }
 
-        Developer developer = new Developer();
-        developer.setName(request.getName());
-        developer.setEmail(request.getEmail());
-        developer.setAppName(request.getAppName());
-        developer.setAppDescription(request.getAppDescription());
-        developer.setIsActive(false);
-        developer.setStatus(Developer.Status.PENDING_VERIFICATION);
-        return developerRepository.save(developer);
+        Developer dev = new Developer();
+        dev.setName(req.getName());
+        dev.setEmail(req.getEmail().toLowerCase().trim());
+        dev.setAppName(req.getAppName());
+        dev.setAppDescription(req.getAppDescription());
+        dev.setOrganization(req.getOrganization());
+        dev.setPasswordHash(passwordEncoder.encode(req.getPassword()));
+
+        // FIX B4: single source of truth — status drives everything.
+        // isActive is derived from status (see Developer entity).
+        dev.setStatus(Developer.Status.PENDING);
+
+        Developer saved = developerRepository.save(dev);
+        log.info("Developer registered: {} ({})", saved.getName(), saved.getEmail());
+
+        return DeveloperResponse.from(saved, null);
     }
 
-    /**
-     * Idempotent approval: if the developer already has an active key this returns
-     * the existing key rather than generating a duplicate.
-     */
+    // ── Approval ──────────────────────────────────────────────────────────────
+
     @Transactional
-    public ApiKey approveDeveloper(Long developerId) {
-        Developer developer = developerRepository.findById(developerId)
-                .orElseThrow(() -> new IllegalArgumentException("Developer not found"));
+    public DeveloperResponse approveDeveloper(Long id) {
+        Developer dev = findOrThrow(id);
 
-        // Return existing active key — prevents duplicate key generation on retries
-        Optional<ApiKey> existingKey = apiKeyService.getKeysByDeveloper(developerId)
-                .stream()
-                .filter(ApiKey::getIsActive)
-                .findFirst();
-
-        if (existingKey.isPresent() && developer.getIsActive()) {
-            return existingKey.get();
+        if (dev.getStatus() == Developer.Status.ACTIVE) {
+            // Idempotent — return current state including existing key
+            ApiKey existing = apiKeyRepository.findFirstByDeveloperIdOrderByCreatedAtDesc(id)
+                .orElse(null);
+            return DeveloperResponse.from(dev, existing != null ? existing.getKeyValue() : null);
         }
 
-        developer.setIsActive(true);
-        developer.setStatus(Developer.Status.ACTIVE);
-        developerRepository.save(developer);
-        return apiKeyService.generateKeyForDeveloper(developer);
+        // FIX B4: set status only — isActive is derived (@Transient or via listener)
+        dev.setStatus(Developer.Status.ACTIVE);
+        developerRepository.save(dev);
+
+        ApiKey key = apiKeyService.generateKeyForDeveloper(dev);
+        log.info("Developer approved: {} — key issued", dev.getEmail());
+
+        return DeveloperResponse.from(dev, key.getKeyValue());
     }
+
+    // ── Revocation ────────────────────────────────────────────────────────────
 
     @Transactional
-    public void revokeDeveloper(Long developerId) {
-        Developer developer = developerRepository.findById(developerId)
-                .orElseThrow(() -> new IllegalArgumentException("Developer not found"));
+    @CacheEvict(value = "apiKeys", allEntries = true)
+    public void revokeDeveloper(Long id) {
+        Developer dev = findOrThrow(id);
 
-        developer.setIsActive(false);
-        developer.setStatus(Developer.Status.REVOKED);   // distinguishable from PENDING_VERIFICATION
-        developerRepository.save(developer);
+        // FIX B4: single write — status drives isActive
+        dev.setStatus(Developer.Status.REVOKED);
+        developerRepository.save(dev);
 
-        developer.getApiKeys().forEach(key -> apiKeyService.toggleKey(key.getId(), false));
+        // Deactivate all keys for this developer in one query
+        apiKeyRepository.deactivateAllForDeveloper(id);
+
+        log.info("Developer revoked: {}", dev.getEmail());
     }
 
-    /**
-     * Returns only genuinely pending developers — not revoked ones.
-     * Previously both had isActive=false and were indistinguishable.
-     */
-    public List<Developer> getPendingApprovals() {
-        return developerRepository.findByStatus(Developer.Status.PENDING_VERIFICATION);
-    }
-
-    public List<Developer> getAllDevelopers() {
-        return developerRepository.findAll();
-    }
+    // ── Queries ───────────────────────────────────────────────────────────────
 
     public Optional<Developer> findByEmail(String email) {
-        return developerRepository.findByEmail(email);
+        return developerRepository.findByEmail(email.toLowerCase().trim());
     }
 
-    public Long countAll() {
-        return developerRepository.countAll();
+    public List<DeveloperResponse> getAllDevelopers() {
+        return developerRepository.findAllWithLatestKey().stream()
+            .map(row -> DeveloperResponse.from((Developer) row[0],
+                row[1] != null ? ((ApiKey) row[1]).getKeyValue() : null))
+            .toList();
     }
 
-    public Long countByStatus(Developer.Status status) {
-        return developerRepository.countByStatus(status);
+    public List<DeveloperResponse> getPendingDevelopers() {
+        return developerRepository.findByStatus(Developer.Status.PENDING).stream()
+            .map(dev -> DeveloperResponse.from(dev, null))
+            .toList();
+    }
+
+    public boolean validatePassword(Developer dev, String raw) {
+        return passwordEncoder.matches(raw, dev.getPasswordHash());
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private Developer findOrThrow(Long id) {
+        return developerRepository.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Developer not found: " + id));
     }
 }
