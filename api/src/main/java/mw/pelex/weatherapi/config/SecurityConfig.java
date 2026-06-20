@@ -27,11 +27,12 @@ public class SecurityConfig {
     @Value("${admin.password}")
     private String adminPassword;
 
-    private final ApiKeyFilter apiKeyFilter;
-    private final CorsConfigurationSource corsConfigurationSource;
+    private final ApiKeyFilter              apiKeyFilter;
+    private final CorsConfigurationSource   corsConfigurationSource;
 
-    public SecurityConfig(ApiKeyFilter apiKeyFilter, CorsConfigurationSource corsConfigurationSource) {
-        this.apiKeyFilter = apiKeyFilter;
+    public SecurityConfig(ApiKeyFilter apiKeyFilter,
+                          CorsConfigurationSource corsConfigurationSource) {
+        this.apiKeyFilter            = apiKeyFilter;
         this.corsConfigurationSource = corsConfigurationSource;
     }
 
@@ -41,7 +42,11 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource))
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
+                // Public — health check must be reachable before Neon wakes up
+                .requestMatchers("/health").permitAll()
+                // Admin — HTTP Basic
                 .requestMatchers("/admin/**").authenticated()
+                // Everything else — ApiKeyFilter handles auth on protected routes
                 .anyRequest().permitAll()
             )
             .httpBasic(Customizer.withDefaults())

@@ -8,7 +8,7 @@ import mw.pelex.weatherapi.model.ApiKey;
 import mw.pelex.weatherapi.model.District;
 import mw.pelex.weatherapi.repository.DistrictRepository;
 import mw.pelex.weatherapi.service.ApiKeyService;
-import mw.pelex.weatherapi.service.OpenMeteoService;
+import mw.pelex.weatherapi.service.WeatherSourceService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -16,30 +16,32 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1")
-// @CrossOrigin removed — handled globally by CorsConfig
 public class WeatherController {
 
-    private final OpenMeteoService openMeteoService;
-    private final DistrictRepository districtRepository;
-    private final ApiKeyService apiKeyService;
+    private final WeatherSourceService weatherSourceService;
+    private final DistrictRepository   districtRepository;
+    private final ApiKeyService        apiKeyService;
 
-    public WeatherController(OpenMeteoService openMeteoService,
-                             DistrictRepository districtRepository,
-                             ApiKeyService apiKeyService) {
-        this.openMeteoService = openMeteoService;
-        this.districtRepository = districtRepository;
-        this.apiKeyService = apiKeyService;
+    public WeatherController(WeatherSourceService weatherSourceService,
+                             DistrictRepository   districtRepository,
+                             ApiKeyService        apiKeyService) {
+        this.weatherSourceService = weatherSourceService;
+        this.districtRepository   = districtRepository;
+        this.apiKeyService        = apiKeyService;
     }
 
     @GetMapping("/districts")
     public ResponseEntity<ApiResponse<List<District>>> getAllDistricts() {
-        return ResponseEntity.ok(ApiResponse.success(districtRepository.findAll()));
+        return ResponseEntity.ok(ApiResponse.success(districtRepository.findAllByOrderByNameAsc()));
     }
 
     @GetMapping("/districts/region/{region}")
     public ResponseEntity<ApiResponse<List<District>>> getDistrictsByRegion(@PathVariable String region) {
         List<District> districts = districtRepository.findByRegionIgnoreCase(region);
-        if (districts.isEmpty()) return ResponseEntity.notFound().build();
+        if (districts.isEmpty()) {
+            return ResponseEntity.status(404)
+                .body(ApiResponse.error("Region '" + region + "' not found. Use Northern, Central or Southern."));
+        }
         return ResponseEntity.ok(ApiResponse.success(districts));
     }
 
@@ -57,13 +59,12 @@ public class WeatherController {
         }
 
         try {
-            WeatherResponse weather = openMeteoService.getCurrentWeather(found);
+            WeatherResponse weather = weatherSourceService.getCurrentWeather(found);
             apiKeyService.logUsage(apiKey, "/weather/" + district, district, 200, request);
             return ResponseEntity.ok(ApiResponse.success(weather));
-        } catch (RuntimeException e) {
+        } catch (WeatherSourceService.WeatherUnavailableException e) {
             apiKeyService.logUsage(apiKey, "/weather/" + district, district, 503, request);
-            return ResponseEntity.status(503)
-                .body(ApiResponse.error(e.getMessage()));
+            return ResponseEntity.status(503).body(ApiResponse.error(e.getMessage()));
         }
     }
 
@@ -81,13 +82,12 @@ public class WeatherController {
         }
 
         try {
-            ForecastResponse forecast = openMeteoService.getForecast(found);
+            ForecastResponse forecast = weatherSourceService.getForecast(found);
             apiKeyService.logUsage(apiKey, "/forecast/" + district, district, 200, request);
             return ResponseEntity.ok(ApiResponse.success(forecast));
-        } catch (RuntimeException e) {
+        } catch (WeatherSourceService.WeatherUnavailableException e) {
             apiKeyService.logUsage(apiKey, "/forecast/" + district, district, 503, request);
-            return ResponseEntity.status(503)
-                .body(ApiResponse.error(e.getMessage()));
+            return ResponseEntity.status(503).body(ApiResponse.error(e.getMessage()));
         }
     }
 }
