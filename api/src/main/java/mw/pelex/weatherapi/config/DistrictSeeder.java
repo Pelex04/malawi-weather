@@ -2,13 +2,28 @@ package mw.pelex.weatherapi.config;
 
 import mw.pelex.weatherapi.model.District;
 import mw.pelex.weatherapi.repository.DistrictRepository;
-import org.springframework.boot.CommandLineRunner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
+/**
+ * Seeds Malawi's 28 districts exactly once.
+ *
+ * FIX S6: The original guard was `if (count > 0) return` — meaning a partially
+ * seeded database (e.g. 10 rows after a first-run crash) would never be completed.
+ *
+ * Now uses a per-district saveIfAbsent pattern: for each district in the canonical
+ * list, skip if a row with that name already exists, otherwise insert. This makes
+ * seeding fully idempotent regardless of how many rows already exist.
+ */
 @Component
-public class DistrictSeeder implements CommandLineRunner {
+public class DistrictSeeder implements ApplicationRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(DistrictSeeder.class);
 
     private final DistrictRepository districtRepository;
 
@@ -17,46 +32,63 @@ public class DistrictSeeder implements CommandLineRunner {
     }
 
     @Override
-    public void run(String... args) {
-        if (districtRepository.count() > 0) return; // Already seeded
-
-        List<District> districts = List.of(
-            // Northern Region
-            new District(null, "Chitipa",    "Northern", -9.7000,  33.2667, 163_000L),
-            new District(null, "Karonga",    "Northern", -9.9333,  33.9333, 380_000L),
-            new District(null, "Rumphi",     "Northern", -11.0167, 33.8667, 254_000L),
-            new District(null, "Mzimba",     "Northern", -11.9000, 33.6000, 745_000L),
-            new District(null, "Mzuzu",      "Northern", -11.4656, 34.0207, 221_000L),
-            new District(null, "Likoma",     "Northern", -12.0667, 34.7333, 12_000L),
-            new District(null, "Nkhata Bay", "Northern", -11.6000, 34.3000, 225_000L),
-
-            // Central Region
-            new District(null, "Kasungu",    "Central",  -13.0333, 33.4833, 740_000L),
-            new District(null, "Nkhotakota", "Central",  -12.9167, 34.2833, 368_000L),
-            new District(null, "Ntchisi",    "Central",  -13.3833, 33.8667, 240_000L),
-            new District(null, "Dowa",       "Central",  -13.6500, 33.9333, 679_000L),
-            new District(null, "Salima",     "Central",  -13.7833, 34.4333, 461_000L),
-            new District(null, "Lilongwe",   "Central",  -13.9669, 33.7873, 1_500_000L),
-            new District(null, "Mchinji",    "Central",  -13.8000, 32.8833, 528_000L),
-            new District(null, "Dedza",      "Central",  -14.3667, 34.3333, 706_000L),
-            new District(null, "Ntcheu",     "Central",  -14.8167, 34.6333, 614_000L),
-
-            // Southern Region
-            new District(null, "Mangochi",   "Southern", -14.4667, 35.2667, 1_100_000L),
-            new District(null, "Machinga",   "Southern", -15.1333, 35.5167, 676_000L),
-            new District(null, "Zomba",      "Southern", -15.3833, 35.3333, 680_000L),
-            new District(null, "Chiradzulu", "Southern", -15.6833, 35.1500, 347_000L),
-            new District(null, "Blantyre",   "Southern", -15.7861, 35.0058, 1_200_000L),
-            new District(null, "Mwanza",     "Southern", -15.6167, 34.5167, 138_000L),
-            new District(null, "Thyolo",     "Southern", -16.0667, 35.1333, 646_000L),
-            new District(null, "Mulanje",    "Southern", -16.0333, 35.5000, 691_000L),
-            new District(null, "Phalombe",   "Southern", -15.8167, 35.6500, 346_000L),
-            new District(null, "Chikwawa",   "Southern", -16.0333, 34.8000, 509_000L),
-            new District(null, "Nsanje",     "Southern", -16.9167, 35.2667, 267_000L),
-            new District(null, "Balaka",     "Southern", -14.9833, 34.9667, 397_000L)
-        );
-
-        districtRepository.saveAll(districts);
-        System.out.println("✅ Seeded all 28 Malawi districts.");
+    public void run(ApplicationArguments args) {
+        int seeded = 0;
+        for (DistrictDef def : DISTRICTS) {
+            boolean exists = districtRepository
+                .findByNameIgnoreCase(def.name()).isPresent();
+            if (!exists) {
+                District d = new District();
+                d.setName(def.name());
+                d.setRegion(def.region());
+                d.setLatitude(def.lat());
+                d.setLongitude(def.lon());
+                districtRepository.save(d);
+                seeded++;
+            }
+        }
+        if (seeded > 0) {
+            log.info("District seed: inserted {} new district(s)", seeded);
+        } else {
+            log.debug("District seed: all {} districts already present", DISTRICTS.size());
+        }
     }
+
+    // ── Canonical district data ───────────────────────────────────────────────
+
+    private record DistrictDef(String name, String region, double lat, double lon) {}
+
+    private static final List<DistrictDef> DISTRICTS = List.of(
+        // Northern Region
+        new DistrictDef("Chitipa",    "Northern", -9.7040,  33.2707),
+        new DistrictDef("Karonga",    "Northern", -9.9333,  33.9333),
+        new DistrictDef("Likoma",     "Northern", -12.0667, 34.7333),
+        new DistrictDef("Mzimba",     "Northern", -11.8972, 33.5972),
+        new DistrictDef("Nkhata Bay", "Northern", -11.6000, 34.3000),
+        new DistrictDef("Rumphi",     "Northern", -11.0100, 33.8600),
+        // Central Region
+        new DistrictDef("Dedza",      "Central",  -14.3667, 34.3333),
+        new DistrictDef("Dowa",       "Central",  -13.6600, 33.9300),
+        new DistrictDef("Kasungu",    "Central",  -13.0333, 33.4833),
+        new DistrictDef("Lilongwe",   "Central",  -13.9626, 33.7741),
+        new DistrictDef("Mchinji",    "Central",  -13.8000, 32.9000),
+        new DistrictDef("Nkhotakota", "Central",  -12.9256, 34.2958),
+        new DistrictDef("Ntcheu",     "Central",  -14.8200, 34.6400),
+        new DistrictDef("Ntchisi",    "Central",  -13.3800, 33.6300),
+        new DistrictDef("Salima",     "Central",  -13.7800, 34.4600),
+        // Southern Region
+        new DistrictDef("Balaka",     "Southern", -14.9900, 34.9600),
+        new DistrictDef("Blantyre",   "Southern", -15.7861, 35.0058),
+        new DistrictDef("Chikwawa",   "Southern", -16.0300, 34.8000),
+        new DistrictDef("Chiradzulu", "Southern", -15.7000, 35.1500),
+        new DistrictDef("Machinga",   "Southern", -14.9700, 35.5200),
+        new DistrictDef("Mangochi",   "Southern", -14.4784, 35.2645),
+        new DistrictDef("Mulanje",    "Southern", -16.0333, 35.5000),
+        new DistrictDef("Mwanza",     "Southern", -15.6200, 34.5200),
+        new DistrictDef("Neno",       "Southern", -15.4100, 34.6500),
+        new DistrictDef("Nsanje",     "Southern", -16.9200, 35.2700),
+        new DistrictDef("Phalombe",   "Southern", -15.8100, 35.6600),
+        new DistrictDef("Thyolo",     "Southern", -16.0700, 35.1400),
+        new DistrictDef("Zomba",      "Southern", -15.3833, 35.3333)
+    );
 }
